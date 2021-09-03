@@ -1,0 +1,38 @@
+[Networking · scylladb/seastar Wiki](https://github.com/scylladb/seastar/wiki/Networking)
+# seastar 网络栈
+
+seastar 支持两种网络栈，都通过future api 进行支持。
+- 默认posix栈，使用C socket API 和epoll后端来提供event
+- native 栈，`--network-stack=native` 进行设置，提供一个TCP/IP栈，比posix快几倍。
+
+seastar 提供share-nothing架构，每个核负责自己的数据结构，不需要锁。操作系统的栈是共享内存架构，需要操作都会涉及锁或者原子操作。即使没有锁冲突发生，也会有乒乓缓存、慢速的read-modify-write 原子操作、序列化。socket APIs 要求在用户态核内核态切换时进行数据拷贝。
+
+## native 栈
+- 每个连接绑核，不需要锁，没有乒乓缓存
+- 每个核负责一个tcp元组空间分片，Seastar 使用硬件多队列功能，使网络接口卡 （NIC） DMAS 每个数据包都到处理其所属流量的核心。
+- 提供copy-less APIs，可以访问接收缓冲器，因为它们已通过DMA放到内存中，或将存储在内存中的块合并到传出的 TCP 流中。
+
+## seastar 传输数据包的子系统
+驱动子系统提供了几种不同的选项：
+- DPDK（Data-Plane Development Kit），是一个跨平台的高性能网络框架，最好用这个选项，因为可以用10GbE and 40GbE NICs，支持最高的性能，使用这个选项的时候，seastar代替操作系统驱动接管了NIC
+- virtio：在没有 SRIOV 设备分配的 KVM 用户运行时使用？
+- xen：在没有 SRIOV 设备分配的 Xen 来宾中运行时使用。
+- vhost:这主要是网络堆栈开发人员使用的调试驱动程序。
+
+
+networking 代码在 [这里](https://github.com/scylladb/seastar/tree/master/src/net)
+
+## 补充知识
+
+### 乒乓缓存
+乒乓缓存是一种双缓存机制，用来加速同时存在I/O操作以及数据处理操作的设备。一个缓存用来保存旧版本的数据供读设备读取，与此同时，另一个缓存保存写设备产生的新版本数据。当新数据完成时，读设备和写设备将会交换两个缓存，双缓存机制将会提高设备的吞吐量，最终有助于避免瓶颈的产生。
+
+[乒乓缓存机制](https://blog.csdn.net/MacwinWin/article/details/109487774)
+
+### read-modify-write
+
+**读-修改-写**（read-modify-write）是计算机科学中的一个原子操作（atomic operation，类似的还有[test-and-set](https://zh.wikipedia.org/wiki/Test-and-set "Test-and-set"), [fetch-and-add](https://zh.wikipedia.org/wiki/Fetch-and-add "Fetch-and-add"), [compare-and-swap](https://zh.wikipedia.org/wiki/Compare-and-swap)等），操作过程是读一个内存位置（或IO端口），修改其值，再写回原位置。
+
+必须要先读操作的一个原因是，系统架构往往只允许字（word）级的读写，必须先读出那些不做修改的比特，保持不变再写回。
+
+[Read-modify-write - 维基百科](https://zh.wikipedia.org/wiki/Read-modify-write)
